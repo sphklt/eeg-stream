@@ -2,18 +2,22 @@
 
 Real-time EEG stream ingestion → preprocessing → cloud model training → low-latency inference.
 
-Built as a take-home project for Temple (May 27 – June 2, 2025).
-
 ---
 
 ## Architecture
 
 ```
-┌─────────────────┐     WebSocket      ┌──────────────────┐     XADD      ┌──────────────────┐
-│  Device Sim     │ ─────────────────► │  FastAPI Backend  │ ────────────► │  Redis Streams   │
-│  (MNE-Python)   │   ws://…/stream    │  /stream endpoint │  stream:eeg   │  (buffer)        │
-│  8-ch, 256 Hz   │                    │                   │               │                  │
+┌─────────────────┐     WebSocket      ┌──────────────────┐               ┌──────────────────┐
+│  Device Sim     │ ─────────────────► │  FastAPI Backend  │               │  Preprocessing   │
+│  (MNE-Python)   │   ws://…/stream    │  /stream endpoint │ ────────────► │  window • norm   │
+│  8-ch, 256 Hz   │                    │                   │               │  artifact reject │
 └─────────────────┘                    └──────────────────┘               └────────┬─────────┘
+                                                                                    │ XADD stream:eeg
+                                                                                    ▼
+                                                                           ┌──────────────────┐
+                                                                           │  Redis Streams   │
+                                                                           │  (buffer)        │
+                                                                           └────────┬─────────┘
                                                                                     │ XREAD
                                                                                     ▼
                                                                        ┌────────────────────────┐
@@ -44,18 +48,18 @@ FastAPI has native async support and first-class WebSocket handling — critical
 Kafka is the right answer at 10x scale (partitioned, replicated, consumer groups across machines). At this scale — one device sim, one backend, one training job — Kafka's operational overhead (ZooKeeper or KRaft, broker management, topic config) is pure cost with no benefit. Redis Streams gives the same append-only, consumer-group semantics with zero extra infrastructure. If this goes to production with 100+ devices, the migration path is clear: swap `XADD`/`XREAD` for a Kafka producer/consumer with the same message schema.
 
 ### Modal over AWS SageMaker / GCP Vertex
-SageMaker requires IAM roles, VPC config, S3 buckets, and a 15-minute cold start before you see a training log. Modal is Python-native: decorate a function, it runs on a GPU in the cloud. For a take-home where time is the constraint and the goal is *showing the training works*, Modal eliminates the infra tax. SageMaker is the right choice when your org already lives in AWS and needs audit trails, VPCs, and enterprise billing.
+SageMaker requires IAM roles, VPC config, S3 buckets, and a significant cold start before you see a training log. Modal is Python-native: decorate a function, it runs on a GPU in the cloud — no broker management, no infra provisioning. SageMaker is the right choice when the org already lives in AWS and needs audit trails, VPCs, and enterprise billing.
 
 > **Note:** Modal was chosen for speed of iteration. The training logic is cloud-agnostic and can be adapted to SageMaker or Vertex AI — the core `train()` function has no Modal-specific dependencies and can be wrapped in a different entrypoint without changes.
 
 ### PyTorch over TensorFlow / JAX
-PyTorch is the standard in modern ML research and most production ML infra teams at startups. Imperative execution makes debugging straightforward. The 1D CNN here is simple enough that any framework works, but PyTorch is what reviewers will read fluently.
+PyTorch is the standard in modern ML research and production ML infra. Imperative execution makes debugging straightforward, and its ecosystem — torchserve, ONNX export, Lightning — covers every direction this project could grow.
 
 ### MNE-Python for EEG simulation
-MNE is the de facto standard library for EEG/MEG data in Python. Using it (even for simulation) signals domain awareness — that you know what the real data looks like, not just that you can stream arbitrary numbers.
+MNE is the de facto standard library for EEG/MEG data in Python. It models real EEG characteristics — channel layouts, sampling rates, artifact profiles — so the simulated stream behaves like data from an actual device, not arbitrary noise.
 
 ### Batch training over online learning
-Brain signal patterns need enough epochs to be statistically stable. Online learning (updating weights per window) risks overfitting to transient noise artifacts — a blink or jaw clench would corrupt the model weights in real-time. Batch training on accumulated windows gives stable gradient estimates and lets us validate on a held-out set before deploying. The right extension is periodic retraining (e.g., every N hours) rather than continuous online updates.
+Brain signal patterns need enough epochs to be statistically stable. Online learning (updating weights per window) risks overfitting to transient noise artifacts — a blink or jaw clench would corrupt the model weights in real-time. Batch training on accumulated windows gives stable gradient estimates and lets us validate on a held-out set before deploying. The intended trigger pattern is periodic retraining — e.g. every N minutes or after M windows accumulate — not a single training run, which keeps the model current without the instability of continuous updates.
 
 ---
 
