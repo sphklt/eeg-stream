@@ -1,0 +1,22 @@
+# Core backend
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+websockets==12.0
+
+# Redis
+redis==5.0.4
+
+# EEG simulation
+mne==1.7.0
+numpy==2.0.2
+
+# ML
+torch==2.6.0
+
+# Cloud training + inference
+modal==1.4.3
+
+# Utilities
+pydantic==2.10.6
+python-dotenv==1.0.1
+httpx==0.27.0        # for latency testing
