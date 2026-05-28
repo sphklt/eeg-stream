@@ -44,6 +44,8 @@ Every tool choice is a deliberate trade-off, not a default pick.
 ### FastAPI over Flask / Django
 FastAPI has native async support and first-class WebSocket handling — critical for a streaming pipeline where connections are long-lived. Flask's WebSocket story requires bolt-on libraries (flask-socketio). Django is too heavy for a pure API + streaming service with no ORM needs.
 
+> **Production note:** The simulator runs on localhost for development. In production, the device connects over WSS to a cloud-hosted backend — the only change is the endpoint URL and adding TLS. The reconnection logic handles that transparently.
+
 ### Redis Streams over Kafka
 Kafka is the right answer at 10x scale (partitioned, replicated, consumer groups across machines). At this scale — one device sim, one backend, one training job — Kafka's operational overhead (ZooKeeper or KRaft, broker management, topic config) is pure cost with no benefit. Redis Streams gives the same append-only, consumer-group semantics with zero extra infrastructure. If this goes to production with 100+ devices, the migration path is clear: swap `XADD`/`XREAD` for a Kafka producer/consumer with the same message schema.
 
@@ -92,10 +94,10 @@ uvicorn backend.main:app --reload
 # 4. Run device simulator
 python device-sim/simulator.py
 
-# 5. (Day 4+) Train on Modal
+# 5. Train on Modal
 modal run model/train.py
 
-# 6. (Day 5+) Deploy inference
+# 6. Deploy inference
 modal deploy inference/endpoint.py
 ```
 
