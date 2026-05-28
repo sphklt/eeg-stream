@@ -112,8 +112,16 @@ Logged as p50 / p95 / p99 in `logs/latency.csv`.
 
 ## What breaks first at 10x scale?
 
-Redis becomes the bottleneck — single-threaded write path, no replication. Fix: migrate to Kafka with partitioning by device ID. The WebSocket layer would also need horizontal scaling behind a load balancer with sticky sessions (or switch to a pub/sub broker). Modal inference would need `keep_warm > 1` to handle concurrent requests.
+There are two independent bottlenecks — write throughput and processing throughput — and they scale separately.
 
-The current implementation uses a single `XREAD` consumer. At scale, this becomes the bottleneck — one worker can't keep up with 100+ devices. The fix is Redis consumer groups: multiple ML workers in the same group, each processing a different subset of windows. Redis guarantees each window is delivered to exactly one worker, enabling horizontal scaling of the training pipeline without changing the producer side at all.
+**1. Write throughput (producers)**
+Redis is single-threaded on writes. With 100+ devices all firing `XADD`, the write path becomes the bottleneck. Fix: migrate to Kafka with partitioning by device ID. Each partition handles one device's stream independently, and the producer side scales horizontally without coordination.
 
-**On device transport:** WebSockets work well at 256 Hz. For very high-frequency data (500 Hz+), gRPC is a better fit — binary protocol, lower per-message overhead, and built-in streaming semantics. Switching from WebSocket to gRPC at that point is a transport swap only; the preprocessing and Redis layers stay unchanged.
+**2. Processing throughput (consumers)**
+The current implementation uses a single `XREAD` worker. One worker can't keep up with high window volume. Fix: Redis consumer groups first — multiple workers in the same group, each window delivered to exactly one worker, no duplicate processing. If the write side also needs scaling, move to Kafka consumer groups at that point. The two fixes are independent and can be applied in sequence.
+
+**WebSocket layer:** needs horizontal scaling behind a load balancer with sticky sessions — a WebSocket connection is stateful, so a client must always route to the same backend instance.
+
+**Inference:** Modal `keep_warm=1` handles one concurrent request. At scale, bump `keep_warm` or add an autoscaling policy.
+
+**On device transport:** WebSockets work well at 256 Hz. For very high-frequency devices (500 Hz+), gRPC is a better fit — binary protocol, lower per-message overhead, built-in streaming. This is a transport-layer swap only; the preprocessing and Redis layers are unchanged.
